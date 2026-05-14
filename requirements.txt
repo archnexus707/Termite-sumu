@@ -1,0 +1,9 @@
+PyQt6>=6.4.0
+paramiko>=3.0.0
+impacket>=0.10.0
+pywinrm>=0.4.3
+python-evtx>=0.7.4
+reportlab>=4.0.0
+telnetlib3>=2.0.0
+pysmbc>=1.0.23
+cryptography>=41.0.0

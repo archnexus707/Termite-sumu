@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "termite-sumu"
+version = "1.0.0"
+description = "Authorized Red Team & Forensics Platform"
+authors = [{ name = "C7aWL3R" }]
+license = { file = "LICENSE" }
+readme = "README.md"
+requires-python = ">=3.10"
+keywords = ["red-team", "pentesting", "forensics", "security", "purple-team"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Information Technology",
+    "Topic :: Security",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Operating System :: POSIX :: Linux",
+]
+dependencies = [
+    "PyQt6>=6.4.0",
+    "paramiko>=3.0.0",
+    "impacket>=0.10.0",
+    "pywinrm>=0.4.3",
+    "python-evtx>=0.7.4",
+    "reportlab>=4.0.0",
+    "telnetlib3>=2.0.0",
+    "cryptography>=41.0.0",
+]
+
+[project.scripts]
+termite-sumu = "main:main"
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0.0", "pytest-qt>=4.2.0"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["config*", "core*", "gui*", "reports*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
