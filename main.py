@@ -16,7 +16,6 @@ def main():
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     app.setOrganizationName("C7aWL3R")
-    app.setAttribute(Qt.ApplicationAttribute.AA_UseHighDpiPixmaps, True)
     window = MainWindow()
     window.show()
     sys.exit(app.exec())
