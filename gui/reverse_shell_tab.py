@@ -1,6 +1,7 @@
 """Reverse Shell Manager GUI tab."""
 from __future__ import annotations
 
+import os
 import threading
 from typing import Dict, Optional
 
@@ -23,7 +24,6 @@ from core.audit import audit
 from core.evasion import (
     EvasionConfig, apply_evasion_to_payload, DetectionTimer, DetectionEvent,
 )
-import socket
 
 
 SESSION_STATUS_COLORS = {
@@ -35,20 +35,22 @@ SESSION_STATUS_COLORS = {
 
 class SessionTerminal(QWidget):
     """Embedded terminal for a reverse shell session."""
+    _output_received = pyqtSignal(str)
 
     def __init__(self, session: Session, parent=None):
         super().__init__(parent)
         self._session = session
         self._build_ui()
-        session.attach_output(self._on_output)
+        self._output_received.connect(self._append_text)
+        session.attach_output(lambda text: self._output_received.emit(text))
 
     def _build_ui(self):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(2, 2, 2, 2)
 
         info = QLabel(
-            f"Session: {self._session.session_id[:8]}  |  "
-            f"Peer: {self._session.peer_addr[0]}:{self._session.peer_addr[1]}  |  "
+            f"Session: {self._session.sid[:8]}  |  "
+            f"Peer: {self._session.peer_ip}:{self._session.peer_port}  |  "
             f"Protocol: {self._session.protocol.upper()}"
         )
         info.setStyleSheet("color:#58a6ff;font-weight:bold;padding:4px;")
@@ -88,7 +90,7 @@ class SessionTerminal(QWidget):
         row.addWidget(kill_btn)
         layout.addLayout(row)
 
-    def _on_output(self, text: str):
+    def _append_text(self, text: str):
         cursor = self._output.textCursor()
         cursor.movePosition(QTextCursor.MoveOperation.End)
         cursor.insertText(text)
@@ -98,13 +100,25 @@ class SessionTerminal(QWidget):
     def _send(self):
         cmd = self._input.text()
         self._input.clear()
-        self._session.send(cmd + "\n")
+        if not self._session.alive:
+            self._append_text("\n[Session closed — cannot send]\n")
+            self._input.setEnabled(False)
+            return
+        if not self._session.send(cmd + "\n"):
+            self._append_text("\n[Session closed — cannot send]\n")
+            self._input.setEnabled(False)
 
     def _kill(self):
         self._session.close()
+        self._input.setEnabled(False)
+        self._append_text("\n[Session killed by operator]\n")
 
 
 class ReverseShellTab(QWidget):
+    # Qt signals for thread-safe GUI updates from the accept thread
+    _session_opened = pyqtSignal()
+    _session_closed = pyqtSignal()
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self._manager = ReverseShellManager()
@@ -115,6 +129,10 @@ class ReverseShellTab(QWidget):
             on_session_ended=self._on_session_close,
         )
         self._build_ui()
+
+        # Marshal thread callbacks to Qt main thread
+        self._session_opened.connect(self._refresh_tables)
+        self._session_closed.connect(self._refresh_tables)
 
         # Refresh table every 2 seconds
         self._timer = QTimer(self)
@@ -369,15 +387,22 @@ class ReverseShellTab(QWidget):
             QMessageBox.critical(self, "Listener Error", str(exc))
 
     def _stop_listener(self):
-        rows = self._listener_table.selectedItems()
-        if not rows:
+        row = self._listener_table.currentRow()
+        if row < 0:
+            QMessageBox.warning(self, "Stop Listener", "Select a listener first.")
             return
-        lid = self._listener_table.item(self._listener_table.currentRow(), 0)
-        if lid:
-            self._manager.stop_listener(lid.text())
-            self._refresh_tables()
+        item = self._listener_table.item(row, 0)
+        if not item:
+            return
+        lid = item.text()
+        self._manager.stop_listener(lid)
+        self._refresh_tables()
 
     def _refresh_tables(self):
+        # Preserve selection across the clear/rebuild
+        selected_listener = self._listener_table.currentRow()
+        selected_session = self._session_table.currentRow()
+
         # Listeners
         listeners = self._manager.list_listeners()
         self._listener_table.setRowCount(len(listeners))
@@ -385,29 +410,35 @@ class ReverseShellTab(QWidget):
             self._listener_table.setItem(i, 0, QTableWidgetItem(lst.lid[:8]))
             self._listener_table.setItem(i, 1, QTableWidgetItem(lst.protocol.upper()))
             self._listener_table.setItem(i, 2, QTableWidgetItem(f"{lst.lhost}:{lst.lport}"))
-            status = "running" if lst.running else "stopped"
+            status = "running" if lst.alive else "stopped"
             si = QTableWidgetItem(status)
-            si.setForeground(QBrush(QColor("#2ea043" if lst.running else "#da3633")))
+            si.setForeground(QBrush(QColor("#2ea043" if lst.alive else "#da3633")))
             self._listener_table.setItem(i, 3, si)
 
         # Sessions
         sessions = self._manager.list_sessions()
         self._session_table.setRowCount(len(sessions))
         for i, s in enumerate(sessions):
-            self._session_table.setItem(i, 0, QTableWidgetItem(s.session_id[:8]))
-            self._session_table.setItem(i, 1, QTableWidgetItem(s.peer_addr[0]))
-            self._session_table.setItem(i, 2, QTableWidgetItem(str(s.peer_addr[1])))
+            self._session_table.setItem(i, 0, QTableWidgetItem(s.sid[:8]))
+            self._session_table.setItem(i, 1, QTableWidgetItem(s.peer_ip))
+            self._session_table.setItem(i, 2, QTableWidgetItem(str(s.peer_port)))
             self._session_table.setItem(i, 3, QTableWidgetItem(s.protocol.upper()))
             status = "active" if s.alive else "closed"
             si = QTableWidgetItem(status)
             si.setForeground(QBrush(QColor(SESSION_STATUS_COLORS.get(status, "#8b949e"))))
             self._session_table.setItem(i, 4, si)
 
+        # Restore selection
+        if selected_listener >= 0 and selected_listener < len(listeners):
+            self._listener_table.selectRow(selected_listener)
+        if selected_session >= 0 and selected_session < len(sessions):
+            self._session_table.selectRow(selected_session)
+
     def _on_session_open(self, session: Session):
-        self._refresh_tables()
+        self._session_opened.emit()
 
     def _on_session_close(self, session_id: str):
-        self._refresh_tables()
+        self._session_closed.emit()
 
     def _open_session_terminal(self):
         row = self._session_table.currentRow()
@@ -415,7 +446,7 @@ class ReverseShellTab(QWidget):
         if row < 0 or row >= len(sessions):
             return
         s = sessions[row]
-        sid = s.session_id
+        sid = s.sid
         if sid in self._session_tabs:
             # Switch to existing tab
             for i in range(self._session_area.count()):
@@ -424,7 +455,7 @@ class ReverseShellTab(QWidget):
                     return
         term = SessionTerminal(s, self)
         self._session_tabs[sid] = term
-        idx = self._session_area.addTab(term, f"{sid[:8]} | {s.peer_addr[0]}")
+        idx = self._session_area.addTab(term, f"{sid[:8]} | {s.peer_ip}")
         self._session_area.setCurrentIndex(idx)
 
     def _build_evasion_config(self) -> EvasionConfig:
@@ -495,14 +526,16 @@ class ReverseShellTab(QWidget):
             lport = self._payload_lport.value()
             payload = self._msf_payload.currentText()
             fmt = self._msf_format.currentText()
-            result = MsfvenomWrapper.generate(payload, lhost, lport, fmt)
-            if result.artifacts:
+            argv, out_path = MsfvenomWrapper.generate(payload, lhost, lport, fmt)
+            import shlex
+            cmd_str = " ".join(shlex.quote(a) for a in argv)
+            if out_path and os.path.exists(out_path):
                 self._payload_output.setPlainText(
-                    f"Command: {result.command_str}\n"
-                    f"Output: {result.artifacts[0] if result.artifacts else 'N/A'}"
+                    f"Command: {cmd_str}\n"
+                    f"Output: {out_path}"
                 )
             else:
-                self._payload_output.setPlainText(f"Command: {result.command_str}\n(dry-run)")
+                self._payload_output.setPlainText(f"Command: {cmd_str}\n(dry-run)")
         except Exception as exc:
             QMessageBox.critical(self, "msfvenom Error", str(exc))
 

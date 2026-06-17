@@ -10,7 +10,7 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, Tabl
 from reportlab.lib.enums import TA_LEFT, TA_CENTER
 
 from core.base_connector import LogEntry
-from config.settings import EXPORTS_DIR, SENSITIVE_FILE_PERMS, APP_NAME, APP_VERSION
+from config.settings import EXPORTS_DIR, SENSITIVE_FILE_PERMS, APP_NAME, APP_VERSION, APP_CONTRIBUTOR
 
 
 def export_logs_pdf(entries: List[LogEntry], host: str) -> str:
@@ -44,6 +44,7 @@ def export_logs_pdf(entries: List[LogEntry], host: str) -> str:
     story = []
     story.append(Paragraph(f"{APP_NAME} — Log Report", title_style))
     story.append(Paragraph(f"Host: {host} | Generated: {datetime.datetime.utcnow().isoformat()}Z | Version: {APP_VERSION}", meta_style))
+    story.append(Paragraph(f"Author: C7aWL3R | Contributor: {APP_CONTRIBUTOR}", meta_style))
     story.append(Paragraph("CONFIDENTIAL — Authorized Use Only", meta_style))
     story.append(HRFlowable(width="100%", thickness=1, color=colors.HexColor("#30363d")))
     story.append(Spacer(1, 0.3*cm))

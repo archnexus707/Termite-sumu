@@ -1,5 +1,3 @@
-import datetime
-import os
 from typing import Optional, Dict
 
 from PyQt6.QtWidgets import (
@@ -25,7 +23,7 @@ from gui.exploit_launcher_tab import ExploitLauncherTab
 from gui.analysis_tab import AnalysisTab
 from gui.redteam_tab import RedTeamTab
 from gui.reference_tab import ReferenceTab
-from config.settings import APP_NAME, APP_VERSION
+from config.settings import APP_NAME, APP_VERSION, APP_CONTRIBUTOR
 
 # Number of permanent (non-closable) tabs prepended to the tab bar
 _PERMANENT_TABS = 5
@@ -153,7 +151,7 @@ class SessionTab(QWidget):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle(f"{APP_NAME} v{APP_VERSION}")
+        self.setWindowTitle(f"{APP_NAME} v{APP_VERSION} | Author: C7aWL3R | Contributor: {APP_CONTRIBUTOR}")
         self.resize(1280, 800)
         self.setStyleSheet(DARK_STYLE)
         self._sessions: Dict[QWidget, tuple] = {}
@@ -188,7 +186,10 @@ class MainWindow(QMainWindow):
             )
 
         # ── Welcome tab for new sessions ──────────────────────────────────
-        welcome = QLabel(f"{APP_NAME}  |  Authorized Red Team & Forensics Platform\n\nSession > New Connection to start")
+        welcome = QLabel(f"{APP_NAME}  |  Authorized Red Team & Forensics Platform\n\n"
+                         f"Session > New Connection to start\n\n"
+                         f"Author: C7aWL3R  |  Contributor: archnexus707\n"
+                         f"v{APP_VERSION}")
         welcome.setAlignment(Qt.AlignmentFlag.AlignCenter)
         welcome.setFont(QFont("Monospace", 13))
         welcome.setStyleSheet("color:#8b949e;")
@@ -391,7 +392,7 @@ class MainWindow(QMainWindow):
             pass
 
     def _close_tab(self, idx):
-        # Protect permanent tabs (0–3) and welcome tab (4)
+        # Protect permanent tabs (0–4) and welcome tab (5)
         if idx <= _PERMANENT_TABS:
             return
         tab_widget = self._tabs.widget(idx)

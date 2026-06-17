@@ -2,8 +2,9 @@ import os
 import re
 
 APP_NAME = "Termite-sumu"
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.2.0"
 APP_AUTHOR = "C7aWL3R"
+APP_CONTRIBUTOR = "archnexus707"
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LOGS_DIR = os.path.join(BASE_DIR, "logs")

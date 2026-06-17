@@ -2,6 +2,10 @@ MIT License
 
 Copyright (c) 2025 C7aWL3R
 
+Contributor: archnexus707 (2026) — bug fixes, Go backend, C++ native modules,
+reverse engineering engine, steganography detection, defensive analysis,
+cross-platform line-ending protocol fixes, thread-safety hardening.
+
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
 in the Software without restriction, including without limitation the rights

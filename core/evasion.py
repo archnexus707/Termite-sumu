@@ -289,7 +289,7 @@ class HTTPBeaconWrapper:
     ]
 
     def __init__(self, cfg: EvasionConfig):
-        self._host = SecureInputValidator.validate_host(cfg.http_beacon_host) if cfg.http_beacon_host else ""
+        self._host = SecureInputValidator.validate_host(cfg.http_beacon_host) if cfg.http_beacon_host else "localhost"
         self._port = SecureInputValidator.validate_port(cfg.http_beacon_port)
         self._path = cfg.http_beacon_path or random.choice(self._PATHS)
         self._ua   = cfg.http_beacon_useragent or random.choice(self._USERAGENTS)

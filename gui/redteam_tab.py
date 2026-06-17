@@ -1,7 +1,6 @@
 """Red Team Operations GUI tab."""
 from __future__ import annotations
 
-import subprocess
 from typing import Optional
 
 from PyQt6.QtWidgets import (
@@ -11,7 +10,7 @@ from PyQt6.QtWidgets import (
     QFormLayout, QStackedWidget, QMessageBox,
     QApplication, QTabWidget,
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QFont
 
 from core.redteam import (
@@ -20,35 +19,7 @@ from core.redteam import (
 )
 from core.exploit_launcher import ToolResult
 from core.audit import audit
-
-
-# ── Shared output reader (same pattern as exploit_launcher_tab) ───────────
-
-class OutputReader(QThread):
-    line_received = pyqtSignal(str)
-    finished      = pyqtSignal(int)
-
-    def __init__(self, proc: subprocess.Popen):
-        super().__init__()
-        self._proc = proc
-
-    def run(self):
-        try:
-            for line in self._proc.stdout:
-                self.line_received.emit(line.rstrip("\n"))
-            rc = self._proc.wait()
-        except Exception as exc:
-            self.line_received.emit(f"[reader error] {exc}")
-            rc = -1
-        self.finished.emit(rc)
-
-    def stop(self):
-        try:
-            self._proc.terminate()
-        except Exception:
-            pass
-        self.quit()
-        self.wait(3000)
+from gui.output_reader import OutputReader
 
 
 # ── Widget helpers ────────────────────────────────────────────────────────
@@ -304,15 +275,20 @@ class WebForm(QWidget):
 
 
 class PostExploitForm(QWidget):
-    TOOLS = ["LinPEAS (local)", "pspy", "SUDO_KILLER", "Find SUID/SGID"]
+    TOOLS = ["LinPEAS (local)", "pspy", "SUDO_KILLER", "Find SUID/SGID",
+             "TS Privesc Enum", "C++ Injector", "Reverse Engineer (RE)",
+             "Stego Detection", "Defense Scan (Blue Team)"]
 
     def __init__(self):
         super().__init__()
         fl = QFormLayout(self)
         fl.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
         self.tool = _cb(self.TOOLS)
+        self.filepath = _le("/path/to/binary_or_file", w=380)
+        self.pid = _spin(1, 65535, 1234, w=100)
         fl.addRow("Tool:", self.tool)
-        fl.addRow("", QLabel("Runs on LOCAL machine for assessment."))
+        fl.addRow("File path:", self.filepath)
+        fl.addRow("PID (inject):", self.pid)
 
     def build(self, dry_run: bool) -> ToolResult:
         tool = self.tool.currentText()
@@ -324,6 +300,20 @@ class PostExploitForm(QWidget):
             return PostExploitRunner.sudo_killer(dry_run)
         if tool == "Find SUID/SGID":
             return PostExploitRunner.find_suid(dry_run)
+        if tool == "TS Privesc Enum":
+            return PostExploitRunner.ts_privesc_enum(dry_run)
+        if tool == "C++ Injector":
+            return PostExploitRunner.cpp_inject(
+                self.pid.value(), self.filepath.text().strip(), dry_run)
+        if tool == "Reverse Engineer (RE)":
+            return PostExploitRunner.reverse_engineer(
+                self.filepath.text().strip(), dry_run)
+        if tool == "Stego Detection":
+            return PostExploitRunner.stego_check(
+                self.filepath.text().strip(), dry_run)
+        if tool == "Defense Scan (Blue Team)":
+            return PostExploitRunner.defense_scan(
+                self.filepath.text().strip(), dry_run)
         raise ValueError(f"Unknown tool: {tool}")
 
 

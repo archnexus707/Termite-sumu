@@ -8,7 +8,7 @@ import paramiko
 
 from core.base_connector import BaseConnector, ConnectionProfile, DeviceNode, LogEntry
 from core.validators import SecureInputValidator
-from config.settings import LINUX_LOG_SOURCES, CONNECTION_TIMEOUT
+from config.settings import LINUX_LOG_SOURCES, CONNECTION_TIMEOUT, SSH_HOSTKEY_TOFU
 
 
 class SSHConnector(BaseConnector):
@@ -24,14 +24,15 @@ class SSHConnector(BaseConnector):
         username = SecureInputValidator.validate_username(self.profile.username)
 
         client = paramiko.SSHClient()
-        client.set_missing_host_key_policy(paramiko.RejectPolicy())
+        # Set host key policy once — never override after initial set
+        if SSH_HOSTKEY_TOFU:
+            client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        else:
+            client.set_missing_host_key_policy(paramiko.RejectPolicy())
 
         known_hosts = os.path.expanduser("~/.ssh/known_hosts")
         if os.path.exists(known_hosts):
             client.load_host_keys(known_hosts)
-        else:
-            # Accept on first connect, then pin — warn user
-            client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
 
         connect_kwargs = dict(
             hostname=host,
@@ -132,8 +133,11 @@ class SSHConnector(BaseConnector):
             return False
         path = SecureInputValidator.validate_path(device.raw_path)
         bind_path = f"{path}/driver/bind"
-        device_id = os.path.basename(path)
-        code, _, _ = self.execute_command(["bash", "-c", f"echo {shlex.quote(device_id)} > {shlex.quote(bind_path)}"])
+        device_id = shlex.quote(os.path.basename(path))
+        # Use sudo tee to safely write to root-owned sysfs
+        code, _, _ = self.execute_command(
+            ["bash", "-c", f"echo {device_id} | sudo tee {shlex.quote(bind_path)} > /dev/null 2>&1"]
+        )
         return code == 0
 
     def disable_device(self, device: DeviceNode) -> bool:
@@ -141,8 +145,10 @@ class SSHConnector(BaseConnector):
             return False
         path = SecureInputValidator.validate_path(device.raw_path)
         unbind_path = f"{path}/driver/unbind"
-        device_id = os.path.basename(path)
-        code, _, _ = self.execute_command(["bash", "-c", f"echo {shlex.quote(device_id)} > {shlex.quote(unbind_path)}"])
+        device_id = shlex.quote(os.path.basename(path))
+        code, _, _ = self.execute_command(
+            ["bash", "-c", f"echo {device_id} | sudo tee {shlex.quote(unbind_path)} > /dev/null 2>&1"]
+        )
         return code == 0
 
     def get_logs(self, sources: Optional[List[str]] = None) -> List[LogEntry]:

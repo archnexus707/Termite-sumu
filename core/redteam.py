@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import datetime
 import os
+import shlex
 import shutil
 import subprocess
 from typing import Dict, List, Optional
@@ -25,9 +26,7 @@ from typing import Dict, List, Optional
 from core.audit import audit
 from core.validators import SecureInputValidator
 from core.exploit_launcher import ToolResult, _require, _spawn
-from config.settings import LOGS_DIR, SENSITIVE_FILE_PERMS
-
-DRY_RUN = os.environ.get("TERMITE_SUMU_DRY_RUN", "0") == "1"
+from config.settings import LOGS_DIR, SENSITIVE_FILE_PERMS, DRY_RUN, BASE_DIR
 
 
 def _ts() -> str:
@@ -558,20 +557,23 @@ class WebAttacker:
 # ---------------------------------------------------------------------------
 
 class PostExploitRunner:
-    """LinPEAS, WinPEAS, pspy — automated local enumeration."""
+    """LinPEAS, WinPEAS, pspy, sudo_killer, C++ injection engine, native scripts."""
 
     LINPEAS_URL = "https://github.com/peass-ng/PEASS-ng/releases/latest/download/linpeas.sh"
     WINPEAS_URL = "https://github.com/peass-ng/PEASS-ng/releases/latest/download/winPEASany.exe"
+    NATIVE_DIR = os.path.join(BASE_DIR, "cpp_native")
+    SCRIPTS_DIR = os.path.join(BASE_DIR, "scripts", "post_exploit")
 
     @classmethod
     def linpeas_local(cls, dry_run: bool = False) -> ToolResult:
         """Download and run linpeas on LOCAL machine (for testing your own system)."""
         out = _out("linpeas", "local") + ".txt"
-        # Download with curl (no shell) then pipe stdout to file
+        tmp_sh = os.path.join(LOGS_DIR, "linpeas_download.sh")
+        # Download to temp file first, then execute (safer than pipe-to-bash)
         argv = ["bash", "-c",
-                f"curl -fsSL '{cls.LINPEAS_URL}' | bash -s -- -a 2>/dev/null"]
-        # Note: this is intentionally bash -c because linpeas requires it.
-        # The URL is hardcoded (not user-supplied) so shell injection is not possible.
+                f"curl -fsSL '{cls.LINPEAS_URL}' -o {shlex.quote(tmp_sh)} 2>/dev/null && "
+                f"bash {shlex.quote(tmp_sh)} -a > {shlex.quote(out)} 2>&1 && "
+                f"rm -f {shlex.quote(tmp_sh)}"]
         audit("RT_POST_LINPEAS", detail=f"out={out} dry_run={dry_run}")
         proc = None if dry_run else _spawn(argv)
         return ToolResult(tool="linpeas", argv=argv, process=proc,
@@ -608,6 +610,69 @@ class PostExploitRunner:
         audit("RT_POST_SUID_ENUM", detail=f"dry_run={dry_run}")
         proc = None if dry_run else _spawn(argv)
         return ToolResult(tool="find-suid", argv=argv, process=proc, dry_run=dry_run)
+
+    @classmethod
+    def ts_privesc_enum(cls, dry_run: bool = False) -> ToolResult:
+        """Run Termite-Sumu's built-in Linux privesc enumeration script."""
+        script = os.path.join(cls.SCRIPTS_DIR, "linux_privesc_enum.sh")
+        if not os.path.exists(script):
+            raise FileNotFoundError(f"Script not found: {script}")
+        argv = ["bash", script, _out("ts_privesc", "local") + ".txt"]
+        audit("RT_POST_TS_PRIVESC", detail=f"script={script} dry_run={dry_run}")
+        proc = None if dry_run else _spawn(argv)
+        return ToolResult(tool="ts-privesc-enum", argv=argv, process=proc, dry_run=dry_run)
+
+    @classmethod
+    def cpp_inject(cls, pid: int, shellcode_path: str, dry_run: bool = False) -> ToolResult:
+        """Invoke the C++ injector against a target PID (Windows, cross-compiled)."""
+        exe = os.path.join(cls.NATIVE_DIR, "bin", "injector.exe")
+        if not os.path.exists(exe):
+            raise FileNotFoundError(
+                f"injector.exe not built. Run: make -C {cls.NATIVE_DIR}"
+            )
+        sc = SecureInputValidator.validate_path(shellcode_path)
+        if not os.path.exists(sc):
+            raise FileNotFoundError(f"Shellcode file not found: {sc}")
+        pid = int(pid)
+        if pid <= 0 or pid > 65535:
+            raise ValueError(f"Invalid PID: {pid}")
+        argv = ["wine", exe, "inject", str(pid), sc] if os.name != "nt" else [exe, "inject", str(pid), sc]
+        audit("RT_POST_CPP_INJECT", detail=f"pid={pid} sc={sc} dry_run={dry_run}")
+        proc = None if dry_run else _spawn(argv)
+        return ToolResult(tool="cpp-injector", argv=argv, process=proc, dry_run=dry_run)
+
+    @classmethod
+    def reverse_engineer(cls, filepath: str, dry_run: bool = False) -> ToolResult:
+        """Static binary analysis: strings, entropy, imports, packer detection."""
+        if dry_run:
+            return ToolResult(tool="re-analyze", argv=["re-analyze", filepath], dry_run=True)
+        from core.reversing import BinaryAnalyzer
+        report = BinaryAnalyzer.analyze(filepath)
+        out = BinaryAnalyzer.export_report(report)
+        audit("RT_RE_ANALYZE", detail=f"file={filepath} out={out}")
+        return ToolResult(tool="re-analyze", argv=["re-analyze", filepath], dry_run=False, artifacts=[out])
+
+    @classmethod
+    def stego_check(cls, filepath: str, dry_run: bool = False) -> ToolResult:
+        """Steganography detection: steghide, binwalk, LSB, spectrogram."""
+        if dry_run:
+            return ToolResult(tool="stego-detect", argv=["stego-detect", filepath], dry_run=True)
+        from core.steg import StegoDetector
+        report = StegoDetector.analyze(filepath)
+        out = StegoDetector.export_report(report)
+        audit("RT_STEGO_DETECT", detail=f"file={filepath} out={out}")
+        return ToolResult(tool="stego-detect", argv=["stego-detect", filepath], dry_run=False, artifacts=[out])
+
+    @classmethod
+    def defense_scan(cls, filepath: str, dry_run: bool = False) -> ToolResult:
+        """Blue team defensive scan: YARA, IOC matching, threat scoring."""
+        if dry_run:
+            return ToolResult(tool="defense-scan", argv=["defense-scan", filepath], dry_run=True)
+        from core.defense import DefenseScanner
+        report = DefenseScanner.scan_file(filepath)
+        out = DefenseScanner.export_report(report)
+        audit("RT_DEFENSE_SCAN", detail=f"file={filepath} score={report.threat_score}")
+        return ToolResult(tool="defense-scan", argv=["defense-scan", filepath], dry_run=False, artifacts=[out])
 
 
 # ---------------------------------------------------------------------------

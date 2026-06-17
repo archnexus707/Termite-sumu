@@ -4,7 +4,7 @@ from typing import Optional
 import paramiko
 from PyQt6.QtWidgets import QPlainTextEdit, QWidget, QVBoxLayout, QHBoxLayout, QLineEdit, QPushButton, QLabel
 from PyQt6.QtCore import Qt, pyqtSignal, QThread, QObject
-from PyQt6.QtGui import QFont, QColor, QPalette, QTextCursor
+from PyQt6.QtGui import QFont, QTextCursor
 
 
 class ShellReader(QObject):

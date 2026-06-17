@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+*.pyo
+logs/
+exports/
+sumu/
+.venv/
+*.part
+*.tmp
+*.zip
+termite-go-backend

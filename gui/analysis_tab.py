@@ -23,12 +23,15 @@ SEV_COLORS = {
 }
 
 
-class AnalysisWorker(QThread):
+class AnalysisSignals(QObject):
     finished = pyqtSignal(list)
     error    = pyqtSignal(str)
 
+
+class AnalysisWorker(QThread):
     def __init__(self, entries: List[LogEntry], os_type: str):
         super().__init__()
+        self.signals = AnalysisSignals()
         self._entries = entries
         self._os_type = os_type
 
@@ -36,9 +39,9 @@ class AnalysisWorker(QThread):
         try:
             analyzer = DeepLogAnalyzer(self._os_type)
             findings = analyzer.analyze(self._entries)
-            self.finished.emit(findings)
+            self.signals.finished.emit(findings)
         except Exception as exc:
-            self.error.emit(str(exc))
+            self.signals.error.emit(str(exc))
 
 
 class AnalysisTab(QWidget):
@@ -139,8 +142,8 @@ class AnalysisTab(QWidget):
         os_type = self._os_combo.currentText().lower()
         audit("ANALYSIS_START", detail=f"entries={len(self._entries)} os={os_type}")
         self._worker = AnalysisWorker(self._entries, os_type)
-        self._worker.finished.connect(self._on_done)
-        self._worker.error.connect(self._on_error)
+        self._worker.signals.finished.connect(self._on_done)
+        self._worker.signals.error.connect(self._on_error)
         self._worker.start()
 
     def _on_done(self, findings: List[Finding]):
@@ -207,7 +210,5 @@ class AnalysisTab(QWidget):
     def _export(self):
         if not self._findings:
             return
-        from core.log_analyzer import DeepLogAnalyzer
-        analyzer = DeepLogAnalyzer(self._os_combo.currentText().lower())
-        path = analyzer.export_json(self._findings)
+        path = DeepLogAnalyzer(self._os_combo.currentText().lower()).export_json(self._findings)
         QMessageBox.information(self, "Export", f"Analysis saved to:\n{path}")

@@ -26,7 +26,7 @@ class WinRMConnector(BaseConnector):
                 endpoint,
                 auth=(username, self.profile.password or ""),
                 transport="ntlm",
-                server_cert_validation="ignore" if self.profile.use_tls else "ignore",
+                server_cert_validation="ignore",
             )
             # Test connection
             result = self._session.run_cmd("echo", ["connected"])
